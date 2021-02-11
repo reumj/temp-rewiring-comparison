@@ -9,19 +9,21 @@
 
 #setwd("/Users/julia/Desktop/Reum_mizer/EBS mizer_v1.6")
 
-library(methods)  # Might have to load reshape2 separately for some reason
-library(reshape2)
-library(plyr)
-library(ggplot2)
-library(grid)
-library(abind)
+require(methods)  # Might have to load reshape2 separately for some reason
+require(reshape2)
+require(plyr)
+require(ggplot2)
+require(grid)
+require(abind)
 
 
 
-# Run batches of models scenarios, one after another - may be parallize this if we were doing like 1000 or something 
+# Run batches of models scenarios, one after another - maybe parallize this if we were doing like 1000 or something 
 
 
-
+####################################
+# FUNCTION FOR THE EBS MODEL ONLY  #
+####################################
 
 runSims<-function(scenList= scen_list, 
                   params=params, 
@@ -180,9 +182,6 @@ getCommInd<-function(mod, time=max(mod@t_dimnames)){
 #############################
 
 
-
-#mod<- allmods[[1]][[1]]
-
 #sp_exclude=c("squalus spp.", 
 #             "myctophids")
 
@@ -191,8 +190,7 @@ getCommInd<-function(mod, time=max(mod@t_dimnames)){
 
 
 
-
-getSSB_Catch_MeanWt<-function(mod, 
+getSSB_Catch_MeanWt<-function(mod, SEoz=FALSE, years_averaged=1, 
   sp_exclude=c("Benthos","Detritus","Fish_Crabs"), 
   remove.background=TRUE) {
   
@@ -209,12 +207,19 @@ getSSB_Catch_MeanWt<-function(mod,
   
   
   ssb<-getSSB_temp(mod)
-  catch<-mizer::getYield(mod)
-  spectra <- getSpectra(mod, biomass=TRUE)
+  time_max<- max(as.numeric(dimnames(mod@n)$time))
+
+  if(SEoz==TRUE){
+    catch<-mizerRewire::getYield(mod)
+    spectra <- getSpectra(mod, biomass=TRUE, time_range = c(time_max-years_averaged, time_max))
+  
+  } else {
+    catch<-mizer::getYield(mod)
+    spectra <- getSpectra(mod, biomass=TRUE, time_range = c(time_max-years_averaged, time_max))
+  }
 
 
-
-  #Get community meant size (biomass weighted) 
+  #Get community mean size (biomass weighted) 
 
   spectratot<- spectra
   spectratot<-spectratot[!spectratot$Species%in%sp_exclude, ]
@@ -229,11 +234,10 @@ getSSB_Catch_MeanWt<-function(mod,
  
   #Get sp and comm ssb and and catches 
 
-  ssb<- ssb[dim(ssb)[1]-1, ]
+  ssb<- colMeans(tail(ssb, years_averaged))
   ssb<- ssb[!names(ssb)%in%sp_exclude]
   
-  catch<- catch[dim(catch)[1]-1, ]
-
+  catch<- colMeans(tail(catch, years_averaged))
   catch<-catch[!names(catch)%in%sp_exclude]
   
 
@@ -283,8 +287,8 @@ getSSB_Catch_MeanWt<-function(mod,
 #mod<-allmods[[6]][[1]]
 
 
-getSSB_Catch_MeanWt_ebs<-function(mod, 
-                              sp_exclude=c("Benthos","Detritus", "Background", "Fish_Crabs")) { 
+getSSB_Catch_MeanWt_ebs<-function(mod,  sp_exclude=c("Benthos","Detritus", "Background", "Fish_Crabs")) { 
+
   ssb<-getSSB(mod)
   catch<-getYieldFromSim(mod)
   spectra <- getSpectra(mod, biomass=TRUE)
@@ -814,15 +818,122 @@ TLsmooth<-function(biomass, bins, tlsd=.1, binwid=.05){
 
 
 
-library(splines)
+require(splines)
 
-#getMeanSSBAge(object)
 
-#object=model
-#time_range=dim(object@n)[1]-1 
-#print_it = TRUE
-#dt=300
-#use.kinf=FALSE
+getAgeAtMatM2<-function (object, 
+                         max_age = 200, 
+                         traitmod=TRUE, 
+                         camiMod=FALSE, 
+                         EBS=FALSE) {
+
+      sim <- object
+      species <- dimnames(sim@n)$sp
+      
+      idx_final<- dim(sim@n)[1]
+      
+    
+      idx <- which(dimnames(sim@n)$sp %in% species)
+      species <- dimnames(sim@n)$sp[idx]
+      age <- seq(0, max_age, length.out = 50)
+      ws <- array(dim = c(length(species), length(age)), 
+                  dimnames = list(Species = species, Age = age))
+     
+      if(traitmod==TRUE){
+        
+        #Trait-based version? But need correction for temp.... 
+        g <- mizer::getEGrowth(sim@params, sim@n[dim(sim@n)[1], , ], 
+                               sim@n_pp[dim(sim@n)[1], ])
+        
+      }
+      
+      if(camiMod==TRUE){
+         
+      #See adapted_funcs
+      g<- getEGrowthCami(sim@params, sim@n[dim(sim@n)[1], , ], 
+                           sim@n_pp[dim(sim@n)[1], ], sim@n_bb[dim(sim@n)[1], ],
+                           sim@n_aa[dim(sim@n)[1], ], 
+                           sim@intTempScalar[,, (dim(sim@temperature)[1])], 
+                           sim@metTempScalar[, , dim(sim@temperature)[1]] )
+         
+      }
+      
+      if( traitmod==FALSE & camiMod==FALSE & EBS==FALSE){
+        
+        g <- mizerRewire::getEGrowth(sim@params, sim@n[dim(sim@n)[1], , ], 
+                                       sim@n_pp[dim(sim@n)[1], ], sim@n_bb[dim(sim@n)[1], ],
+                                       sim@n_aa[dim(sim@n)[1], ], 
+                                       sim@intTempScalar[,, (dim(sim@temperature)[1])], 
+                                       sim@metTempScalar[, , dim(sim@temperature)[1]] )
+      }
+      
+     
+      if(EBS==TRUE){
+        
+        g<- sim@e_growth[idx_final-1,,]
+  
+      }
+      
+      
+  
+    for (j in 1:length(species)) {
+        i <- idx[j]
+        g_fn <- stats::approxfun(sim@params@w, g[i, ])
+        myodefun <- function(t, state, parameters) {
+          return(list(g_fn(state)))
+        }
+        ws[j, ] <- deSolve::ode(y = sim@params@species_params$w_min[i], 
+                                times = age, func = myodefun)[, 2]
+
+    }
+     
+    # Calculate size at maturation 
+    # Get weight at maturation 
+    # plug weight into age function to get age at maturation  
+     
+    agemat<-rep(NA, length(species))
+    names(agemat)<-species
+     
+    for (j in 1:(length(species)-2)) {
+      i <- idx[j]
+      psi_fn <- stats::approxfun(sim@params@psi[i,], dimnames(sim@params@psi)$w)
+      
+      age_fn<- stats::approxfun( ws[i, ], as.numeric(colnames(ws)))
+      agemat[i]<-age_fn(psi_fn(.5))
+        
+      }
+     
+    # To get predation mortality rate: 
+    
+    
+    n<-sim@n[idx_final,,]
+    
+    if(traitmod==FALSE & EBS==FALSE){
+      #m2<- rowSums(n*mizerRewire::getPredMort(sim, 
+      #                                        n=n, 
+      #                                        n_pp=n_pp,
+      #                                        intakeScalar=sim@intTempScalar[,,1]))
+
+      m2<-rowSums(I(n>0)*n*mizerRewire::getPredMort(sim, intakeScalar=sim@intTempScalar[,,1])[idx_final,,])
+      
+    }
+
+    if(traitmod==TRUE){
+        
+        m2<- rowSums(I(n>0)*n*mizer::getPredMort(sim)[idx_final,,])
+    
+    }
+    
+      
+     if(EBS==TRUE){
+       
+        m2<- rowSums(I(n>0)*n*sim@m2[idx_final-1, -26, c(31:130)])
+     }
+    
+
+
+      return(cbind(agemat,m2))
+  }
 
 
 getMeanSSBAge_ebs<-function(object=model, time_range=dim(object@n)[1]-1, 
@@ -1027,213 +1138,6 @@ getMeanSSBAge_ebs<-function(object=model, time_range=dim(object@n)[1]-1,
 
 
   
-################################
-# Growth curves for all models #
-################################
-
-
-getAgeAtMatM2<-function (object, 
-                         max_age = 200, 
-                         traitmod=FALSE, 
-                         camiMod=FALSE, 
-                         EBS=FALSE) {
-
-      sim <- object
-      species <- dimnames(sim@n)$sp
-      
-      idx_last<- dim(sim@n)[1]
-      
-    
-      idx <- which(dimnames(sim@n)$sp %in% species)
-      species <- dimnames(sim@n)$sp[idx]
-      age <- seq(0, max_age, length.out = 50)
-      ws <- array(dim = c(length(species), length(age)), 
-                  dimnames = list(Species = species, Age = age))
-     
-      if(traitmod==TRUE){
-        
-        #Trait-based version? But need correction for temp.... 
-        g <- mizer::getEGrowth(sim@params, sim@n[dim(sim@n)[1], , ], 
-                               sim@n_pp[dim(sim@n)[1], ])
-        
-      }
-      
-      if(camiMod==TRUE){
-         
-      #See adapted_funcs
-      g<- getEGrowthCami(sim@params, sim@n[dim(sim@n)[1], , ], 
-                           sim@n_pp[dim(sim@n)[1], ], sim@n_bb[dim(sim@n)[1], ],
-                           sim@n_aa[dim(sim@n)[1], ], 
-                           sim@intTempScalar[,, (dim(sim@temperature)[1])], 
-                           sim@metTempScalar[, , dim(sim@temperature)[1]] )
-         
-      }
-      
-      if( traitmod==FALSE & camiMod==FALSE & EBS==FALSE){
-        
-        g <- mizerRewire::getEGrowth(sim@params, sim@n[dim(sim@n)[1], , ], 
-                                       sim@n_pp[dim(sim@n)[1], ], sim@n_bb[dim(sim@n)[1], ],
-                                       sim@n_aa[dim(sim@n)[1], ], 
-                                       sim@intTempScalar[,, (dim(sim@temperature)[1])], 
-                                       sim@metTempScalar[, , dim(sim@temperature)[1]] )
-      }
-      
-     
-      if(EBS==TRUE){
-        
-        g<- sim@e_growth[idx_last-1,,]
-  
-      }
-      
-      
-  
-    for (j in 1:length(species)) {
-        i <- idx[j]
-        g_fn <- stats::approxfun(sim@params@w, g[i, ])
-        myodefun <- function(t, state, parameters) {
-          return(list(g_fn(state)))
-        }
-        ws[j, ] <- deSolve::ode(y = sim@params@species_params$w_min[i], 
-                                times = age, func = myodefun)[, 2]
-
-    }
-     
-    # Calculate size at maturation 
-    # Get weight at maturation 
-    # plug weight into age function to get age at maturation  
-     
-    agemat<-rep(NA, length(species))
-    names(agemat)<-species
-     
-    for (j in 1:(length(species)-2)) {
-      i <- idx[j]
-      psi_fn <- stats::approxfun(sim@params@psi[i,], dimnames(sim@params@psi)$w)
-      
-      age_fn<- stats::approxfun( ws[i, ], as.numeric(colnames(ws)))
-      agemat[i]<-age_fn(psi_fn(.5))
-        
-      }
-     
-    # To get predation mortality rate: 
-    
-    
-    n<-sim@n[idx_last,,]
-    
-    if(traitmod==FALSE & EBS==FALSE){
-      #m2<- rowSums(n*mizerRewire::getPredMort(sim, 
-      #                                        n=n, 
-      #                                        n_pp=n_pp,
-      #                                        intakeScalar=sim@intTempScalar[,,1]))
-
-      m2<-rowSums(n*mizerRewire::getPredMort(sim, intakeScalar=sim@intTempScalar[,,1])[idx_final,,])
-      
-    }
-      if(traitmod==TRUE){
-        
-      m2<- rowSums(n*mizer::getPredMort(sim)[idx_final,,])
-    
-      }
-    
-      
-     if(EBS==TRUE){
-       
-        m2<- rowSums(n*sim@m2[idx_last-1, -26, c(31:130)])
-     }
-    
-    
-      return(cbind(agemat,m2))
-  }
-
-
-
-
-
-
-###############################################################################
-# CALCULATE ENERGY SOURCES 
-########################################
-
-
-#Tas model 
-
-model<-allmods[[4]][[1]]
-
-
-
-sp_excludeTL=NA
-trace_group = "benthos"
-  
-#Pull out diet composition, put into proportional contribution witin a predator species and predator size class
-tlsum<-model@diet_comp[1,1,,]
-tlsum<-drop(tlsum)
-names(dimnames(tlsum))<-c("predator","pred_size")
-
-
-predator<- dimnames(model@diet_comp)$predator
-prey<-dimnames(model@diet_comp)$prey
-pred_size<- dimnames(model@diet_comp)$pred_size
-prey_size<- dimnames(model@diet_comp)$prey_size
-
-tlsum[]<-0
-
-#Load in specific group to trace
-# tlsum[dimnames(tlsum)$predator==trace_group, ] <- 1
-
-#Set up for TL calculation
-predator<- predator[!predator%in%sp_excludeTL]
-dietcomp<- model@diet_comp[!dimnames(model@diet_comp)$predator%in%sp_excludeTL, , , ]
-
-
-for(i in 1:length(pred_size)){      # Predator size 
-  for (j in 1:length(predator)){  # Predator species
-    
-    tl<-  weighted.mean(tlsum,  dietcomp[dimnames(dietcomp)$predator==predator[j], dimnames(dietcomp)$pred_size==pred_size[i], ,] ) 
-    tlsum[dimnames(tlsum)$predator==predator[j], dimnames(tlsum)$pred_size==pred_size[i]]<-tl
-  }
-}
-
-
-# Melt the arrays to make data frame with species, wt, biomass, num, tl
-
-
-tldat<-melt(tlsum)
-# tldat<-na.omit(tldat) #shouldn't need
-
-b_ave<-sweep(n_ave, 2, model@params@w *model@params@dw, "*")
-predbio<-melt(b_ave)
-
-
-ma<-match(paste(tldat$predator, signif(tldat$pred_size,3)), paste(predbio$sp, signif(predbio$w,3)))
-
-tldat$predbio<- predbio$value[ma]
-tldat$pred_size<- floor(log10(as.numeric(tldat$pred_size)))+.5
-
-DFtl<- data.table(tldat)
-tldatave<-DFtl[,list(tl_ave = weighted.mean(value, predbio, na.rm = TRUE)),by=.(predator , pred_size)]
-
-# Add to predator food web metrics 
-ma<-match( paste(datPredSize$predator, datPredSize$pred_size), paste(tldatave$predator, tldatave$pred_size))
-datPredSize$relTL <- tldatave$tl_ave[ma]
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-############################
-# Helper functions  ########
-
 
 
 
@@ -1337,34 +1241,46 @@ get_caEff<-function(x){
 # Also get M2 the models, and mizerRewire::getEGrowth() to calculate 
 # changes in age at reproduction, average age of spawners, sd of avge of spawners
 
-model<-allmods[[1]][[1]]
-
-getRsummaryTrait(model)
+#model<- allmods$trait500$baserun
 
 getRsummaryTrait<-function(model, dt=.25){
   
   tmax<-dim(model@n)[1]
   
-  rdi<-mizer::getRDI(model@params, model@n[tmax,,],model@n_pp[tmax,])
+  rdi<-mizer::getRDI(model@params)
+
   e<-model@params@species_params$erepro 
   rmax<- model@params@species_params$R_max
   
   rdd <- rmax*rdi*e/(rdi*e+rmax) #Apply BH
 
   names(rmax)<- model@params@species_params$species
+
+
+  erepro<- model@params@species_params$erepro
+  w_inf<- model@params@species_params$w_inf
+  sigma<- model@params@species_params$sigma
+  beta<- model@params@species_params$beta
+
+  names(rmax)<- model@params@species_params$species
+  names(erepro)<- model@params@species_params$species
+  names(w_inf)<- model@params@species_params$species
+  names(sigma)<- model@params@species_params$species
+  names(beta)<- model@params@species_params$species
   
-  return(cbind(rdi,rdd,rmax))
+  return(cbind(rdi,rdd,rmax,erepro,w_inf,sigma,beta))
   
 }
 
 
 
-model<-allmods[[2]][[1]]
+#SEoz, tasman, baltic
+#out_r<-lapply(allmods[c(1,3,4)], function (x) { lapply(x, getRsummary)})
 
 
-getRsummary(model)
+#North Sea doesnt work
 
-
+#model<- allmods$SEoz$baserun
 
 getRsummary<-function(model, dt=.25){
   
@@ -1384,36 +1300,49 @@ getRsummary<-function(model, dt=.25){
          model@intTempScalar[,,(tmax/dt)], 
          model@metTempScalar[,,(tmax/dt)])
   
+
   rmax<- model@params@species_params$r_max
+  erepro<- model@params@species_params$erepro
+  w_inf<- model@params@species_params$w_inf
+  sigma<- model@params@species_params$sigma
+  beta<- model@params@species_params$beta
+
   names(rmax)<- model@params@species_params$species
+  names(erepro)<- model@params@species_params$species
+  names(w_inf)<- model@params@species_params$species
+  names(sigma)<- model@params@species_params$species
+  names(beta)<- model@params@species_params$species
   
-  return(cbind(rdi,rdd,rmax))
+  return(cbind(rdi,rdd,rmax,erepro,w_inf,sigma,beta))
   
 }
 
 
+#out_rebs<-lapply(allmods[6], function (x) { lapply(x, getRsummary_ebs)})
 
-model<-allmods[[6]][[1]]
+#model<-allmods$ebs_default$baseline
 
 getRsummary_ebs<-function(model, sp_exclude=c("Benthos","Detritus")){
   
   tmax<-dim(model@n)[1]
   
   rdi<-model@RDI[tmax-1, ]
-  
   rdd <-   model@RDI[tmax-1, ] /model@Rratio[tmax-1, ]
-  
+
+  rdd[model@params@species_params$sex=="female"]<- 2*rdd[model@params@species_params$sex=="female"]
   rmax<- model@params@species_params$r_max
-  names(rmax)<- model@params@species_params$species
-  
-  dat<-cbind(rdi,rdd,rmax)
+  erepro<- model@params@species_params$erepro
+  w_inf<- model@params@species_params$w_inf
+  sigma<- model@params@species_params$sigma
+  beta<- model@params@species_params$beta
+
+  dat<-cbind(rdi,rdd,rmax,erepro,w_inf,sigma,beta)
+
   dat[is.na(dat)]<-0
   
   rownames(dat)<- model@params@species_params$species1
   
   dat<- dat[!model@params@species_params$sex=="male", ]
-  
-  dat<- dat[!rownames(dat)%in%sp_exclude, ]
   
   return(dat)
   
@@ -1424,56 +1353,6 @@ getRsummary_ebs<-function(model, sp_exclude=c("Benthos","Detritus")){
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-#species_params = model@params@species_params)
- return(rdd)
-
-
-
-
-intakeScalar=tasm_warming_met@intTempScalar
-
-
-library("mizerRewire")
-
-test0<-mizerRewire::getM2(tasm_baserun, intakeScalar=tasm_baserun@intTempScalar[,,1]) 
-test1<-mizerRewire::getM2(tasm_warming_int, intakeScalar=tasm_warming_int@intTempScalar[,,1]) 
-
-
-plot(test1[101,5,] /test0[101,5,] )
-
-
-mizerRewire::getRDD(tasm_warming_int, intakeScalar=tasm_warming_int@intTempScalar[,,1]) 
-
-getRDI(params, model@n[tmax,,],model@n_pp[tmax,], model@n_bb[tmax,], model@n_aa[tmax,], model@intTempScalar[,,(tmax/dt)], model@metTempScalar[,,(tmax/dt)])
-
-#get RDD
-
-model<- tasm_warming_met
-tmax=100
-dt=.25
-
-getRDD(model@params,model@n[tmax,,],model@n_pp[tmax,], 
-       model@n_bb[tmax,], model@n_aa[tmax,], sex_ratio = 0.5, model@intTempScalar[,,(tmax/dt)], model@metTempScalar[,,(tmax/dt)])
-
-model@params@species_params$r_max /getRDD(model@params,model@n[tmax,,],model@n_pp[tmax,], 
-                                          model@n_bb[tmax,], model@n_aa[tmax,], sex_ratio = 0.5, model@intTempScalar[,,(tmax/dt)], model@metTempScalar[,,(tmax/dt)])
-
-
-getRDI(params, model@n[tmax,,],model@n_pp[tmax,], model@n_bb[tmax,], model@n_aa[tmax,], model@intTempScalar[,,(tmax/dt)], model@metTempScalar[,,(tmax/dt)])
 
 
 
